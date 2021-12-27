@@ -1,0 +1,87 @@
+---
+title: "Statistical Rethinking: Chapter 8 Markov Chain Monte Carlo"
+output: html_notebook
+---
+
+# Good King Markov and His island kingdom
+
+Metropolis algorithm:
+
+1. Wherever the King is, each week he decides between staying put for another week or moving to one of the two adjacent islands. To decide his next move, he flips a coin.
+2. if the coin turns up heads, the King considers moving to the adjacent island clockwise around dthe archipelago. If the coin turns up tails, he considers instead moving counterclockwise. Call the island the nominates the proposal island. 
+3. Now, to see whether or not he moves to the proposal island, King Markov counts out a number of seashells equal to the relative population size of the proposal island. So for example, if the proposal island is number 9, then he counts out 9 seashells. Then he also counts out a number of stones equal to the relative population of the current island. So fo example, if the current island is number 10, then King Markov ends up holding 10 stones, in addition to the 9 seashells.
+4. When there are more seashells than stones, King Markov always moves to the proposal island. But if there are fewer shells than stones, he discards a number of stones equal to the number of shells. So for example, if there are 4 shells and 6 stones, he ends up with 4 shells and 6 - 4 = 2 stones. Then he places the shells and the remaining stones in a bag. He reaches in and randomly pulls out one object. If it is a shell, he moves to the proposal island. Otherwise, he stays put another week. As a result, the probability that he moves is equal to the number of shells divided by the original number of stones. 
+
+```{r}
+num_weeks <- 1e5
+positions <- rep(0, num_weeks)
+current <- 10
+for (i in 1:num_weeks) {
+  # record current position
+  positions[i] <- current
+  
+  # flip coin to generate proposal
+  proposal <- current + sample(c(-1, 1), size = 1)
+  
+  # now make sure he loops around the archipelago
+  if(proposal < 1) proposal <- 10
+  if(proposal > 10) proposal <- 1
+  
+  # move?
+  prob_move <- proposal / current
+  current <- ifelse(runif(1) < prob_move, proposal, current)
+}
+
+plot(positions)
+```
+
+# Markov Chain Monte Carlo
+
+## Gibbs Sampling
+
+The Metropolis algorithm works whever the probability of proposing a jump to B from A is equal to the probability of proposing A from B, when the proposal distribution is symmetric. Metropolis-Hastings is a more general method that allows asymmetric proposals. This is beneficial because it allows us to explore the posterior distribution in fewer steps. Gibbs Sampling is a variant of the Metropolis-Hastings algorithm that is more efficient. Gibbs sampling relys on conjugate priors to increase efficiency.
+
+## Hamiltonian Monte Carlo
+
+HMC: With a single parameter, the log-posterior is like a bowl with the MAP at its nadir. The job is to sweep across the surface of the bowl, adjusting the speed in proportion to how high up we are. When the log-posterior is very flat, bacause of a lack of information, then the particle can glide for a long time before the slope makes it turn around. When the log-posterior is very steep, the particle doesn't get far before turning around. 
+
+## Easy HMC: map2stan
+
+```{r}
+library(rethinking)
+data(rugged)
+
+d <- rugged
+d$log_gdp <- log(d$rgdppc_2000)
+dd <- d[complete.cases(d$rgdppc_2000), ]
+
+m8.1 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged + bA * cont_africa + bAR * rugged * cont_africa,
+        a ~ dnorm(0, 100),
+        bR ~ dnorm(0, 10),
+        bA ~ dnorm(0, 10),
+        bAR ~ dnorm(0, 10),
+        sigma ~ dunif(0, 10)),
+  data = dd
+)
+precis(m8.1)
+
+# now using HMC
+dd.trim <- dd[ , c("log_gdp", "rugged", "cont_africa")]
+str(dd.trim)
+
+m8.1stan <- map2stan(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged + bA * cont_africa + bAR * rugged * cont_africa,
+        a ~ dnorm(0, 100),
+        bR ~ dnorm(0, 10),
+        bA ~ dnorm(0, 10),
+        bAR ~ dnorm(0, 10),
+        sigma ~ dcauchy(0, 2)),
+  data = dd.trim
+)
+precis(m8.1stan)
+```
+
+
