@@ -1,0 +1,1150 @@
+---
+title: "Statistical Rethinking: Chapter 5"
+output: html_notebook
+---
+
+# Multivariate Linear Models
+
+## Spurious association
+
+Does marriage cause divorce?
+
+```{r}
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+
+# load data
+library(rethinking)
+data(WaffleDivorce)
+d <- WaffleDivorce
+
+# Figure 5.1
+ggplot(d) +
+  stat_smooth(aes(WaffleHouses/Population, Divorce), method = 'lm', level = .89, 
+              fullrange = T, color = 'black', alpha = .1, lwd = .3) +
+  geom_point(aes(WaffleHouses/Population, Divorce), 
+             shape = 21, color = 'dodgerblue') +
+  geom_text(data = filter(d, Loc %in% c('AL', 'AR', 'GA', 'OK', 'ME', 'NJ', 'SC')),
+             aes(x = WaffleHouses/Population + 1.2, y = Divorce, label = Loc), size = 3) +
+  scale_x_continuous(limits = c(0, 50)) +
+  labs(x = 'Waffle Houses per million', y = 'Divorce Rate')
+
+# standardize predictor
+d$MedianAgeMarriage.s <- (d$MedianAgeMarriage - mean(d$MedianAgeMarriage)) / sd(d$MedianAgeMarriage)
+
+# fit the model
+m5.1 <- map(
+  alist(Divorce ~ dnorm(mu, sigma),
+        mu <- a + bA * MedianAgeMarriage.s,
+        a ~ dnorm(10, 10),
+        bA ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+# results
+precis(m5.1)
+
+# compute the percentile interval of the mean
+MAM.seq <- seq(from = 3, to = 3.5, length.out = 30)
+mu <- link(m5.1, data = data.frame(MedianAgeMarriage.s = MAM.seq))
+mu.PI <- apply(mu, 2, PI)
+
+# plot
+plot(Divorce ~ MedianAgeMarriage.s, data = d, col = rangi2)
+abline(m5.1)
+shade(mu.PI, MAM.seq)
+```
+
+Same model with Stan:
+
+```{stan output.var = "m5.1.stan"}
+data {
+  int<lower = 0> N;
+  vector[N] Divorce;
+  vector[N] MedianAgeMarriage_s;
+}
+
+parameters {
+  real a;
+  real bA;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[N] mu;
+  mu = a + bA * MedianAgeMarriage_s;
+  
+  // priors
+  a ~ normal(10, 10);
+  bA ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  Divorce ~ normal(mu, sigma);
+}
+```
+
+Now estimate the model:
+
+```{r}
+dat <- list(N = NROW(d),
+            Divorce = d$Divorce,
+            MedianAgeMarriage_s = d$MedianAgeMarriage.s)
+
+m5.1.stan.fit <- sampling(m5.1.stan,
+                          data = dat)
+precis(m5.1.stan.fit)
+
+# Plot the model --------------------------------------------------------------
+## draw from posterior samples
+post <- as.data.frame(m5.1.stan.fit)
+
+## recreate mu and simulate it with new data
+f_mu <- function(x) post$a + post$bA * x
+a_z_new <- seq(-3, 3)
+
+mu <- 
+  sapply(a_z_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) a_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(a_z, divorce, -Iter) %>%
+  group_by(a_z) %>%
+  mutate(hpdi_l = HDInterval::hdi(divorce, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(divorce, credMass = 0.8)[2],
+         mu = mean(divorce)) %>%
+  ungroup() %>%
+  mutate(a_z = as.numeric(a_z))
+
+## plot raw data and model estimate of mu
+ggplot() +
+  geom_point(data = d,
+             aes(x = MedianAgeMarriage.s, y = Divorce),
+             shape = 1, 
+             color = "blue") +
+  geom_ribbon(data = mu,
+              aes(x = a_z, ymin = hpdi_l, ymax = hpdi_h), alpha = 0.1) +
+  geom_line(data = mu, aes(x = a_z, y = mu))
+```
+
+
+```{r}
+# standardize predictor
+d$Marriage.s <- (d$Marriage - mean(d$Marriage)) / sd(d$Marriage)
+
+# fit the model
+m5.2 <- map(
+  alist(Divorce ~ dnorm(mu, sigma),
+        mu <- a + bR * Marriage.s,
+        a ~ dnorm(10, 10),
+        bR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+# results
+precis(m5.2)
+
+# compute the percentile interval of the mean
+MAM.seq <- seq(from = 3, to = 3.5, length.out = 30)
+mu <- link(m5.2, data = data.frame(Marriage.s = MAM.seq))
+mu.PI <- apply(mu, 2, PI)
+
+# plot
+plot(Divorce ~ Marriage.s, data = d, col = rangi2)
+abline(m5.2)
+shade(mu.PI, MAM.seq)
+```
+
+Now the Stan model with `Marrage_s`:
+
+```{stan output.var = "m5.2.stan"}
+data {
+  int<lower = 0> N;
+  vector[N] Divorce;
+  vector[N] Marriage_s;
+}
+
+parameters {
+  real a;
+  real bR;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[N] mu;
+  mu = a + bR * Marriage_s;
+  
+  // priors
+  a ~ normal(10, 10);
+  bR ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  Divorce ~ normal(mu, sigma);
+}
+```
+
+Now estimate the Stan model:
+
+```{r}
+dat <- list(N = NROW(d),
+            Divorce = d$Divorce,
+            Marriage_s = d$Marriage.s)
+
+m5.2.stan.fit <- sampling(m5.2.stan,
+                          data = dat)
+precis(m5.2.stan.fit)
+
+# Plot the model --------------------------------------------------------------
+## draw from posterior samples
+post <- as.data.frame(m5.2.stan.fit)
+
+## recreate mu and simulate it with new data
+f_mu <- function(x) post$a + post$bR * x
+a_z_new <- seq(-3, 3)
+
+mu <- 
+  sapply(a_z_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) a_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(a_z, divorce, -Iter) %>%
+  group_by(a_z) %>%
+  mutate(hpdi_l = HDInterval::hdi(divorce, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(divorce, credMass = 0.8)[2],
+         mu = mean(divorce)) %>%
+  ungroup() %>%
+  mutate(a_z = as.numeric(a_z))
+
+## plot raw data and model estimate of mu
+ggplot() +
+  geom_point(data = d,
+             aes(x = Marriage.s, y = Divorce),
+             shape = 1, 
+             color = "blue") +
+  geom_ribbon(data = mu,
+              aes(x = a_z, ymin = hpdi_l, ymax = hpdi_h), alpha = 0.1) +
+  geom_line(data = mu, aes(x = a_z, y = mu))
+```
+
+
+Now let's add both variables:
+
+```{r}
+# fit the model
+m5.3 <- map(
+  alist(Divorce ~ dnorm(mu, sigma),
+        mu <- a + bA * MedianAgeMarriage.s + bR * Marriage.s,
+        a ~ dnorm(10, 10),
+        bA ~ dnorm(0, 1),
+        bR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+# results
+precis(m5.3)
+
+plot(precis(m5.3))
+
+# compute the percentile interval of the mean
+MAM.seq <- seq(from = 3, to = 3.5, length.out = 30)
+mu <- link(m5.2, data = data.frame(Marriage.s = MAM.seq))
+mu.PI <- apply(mu, 2, PI)
+
+# plot
+plot(Divorce ~ Marriage.s, data = d, col = rangi2)
+abline(m5.2)
+shade(mu.PI, MAM.seq)
+```
+
+Both variables in the Stan model:
+
+```{stan output.var = "m5.3.stan"}
+data {
+  int<lower = 0> N;
+  vector[N] Divorce;
+  vector[N] MedianAgeMarriage_s;
+  vector[N] Marriage_s;
+}
+
+parameters {
+  real a;
+  real bA;
+  real bR;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[N] mu;
+  mu = a + bA * MedianAgeMarriage_s + bR * Marriage_s;
+  
+  // priors
+  a ~ normal(10, 10);
+  bA ~ normal(0, 1);
+  bR ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  Divorce ~ normal(mu, sigma);
+}
+```
+
+Now estimate the Stan model with both parameters:
+
+```{r}
+dat <- list(N = NROW(d),
+            Divorce = d$Divorce,
+            Marriage_s = d$Marriage.s,
+            MedianAgeMarriage_s = d$MedianAgeMarriage.s)
+
+m5.3.stan.fit <- sampling(m5.3.stan,
+                          data = dat)
+precis(m5.3.stan.fit)
+```
+
+
+### Plotting to intrepret linear regression
+
+We will cover three techniques:
+
+1. Predictor residual plots: These show the outcome against residual predictor values
+
+2. Counterfactual plots: These show implied predictions for imaginary experiments in which the different variables can be changed independently of on another
+
+3. Posterior prediction plots: These show model-based predictions against raw data, or otherwise display the error in prediction
+
+#### Predictor residual plots
+
+```{r}
+m5.4 <- map(
+  alist(Marriage.s ~ dnorm(mu, sigma),
+        mu <- a + b * MedianAgeMarriage.s,
+        a ~ dnorm(0, 10),
+        b ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+# now calculate residuals by subtracting observed marriage rate in each state
+# from the predicted rate
+
+# compute expected value at MAP for each state
+mu <- coef(m5.4)["a"] + coef(m5.4)["b"] * d$MedianAgeMarriage.s
+
+# compute residual for each state
+m.resid <- d$Marriage.s - mu
+
+# plot
+plot(Marriage.s ~ MedianAgeMarriage.s, d, col = rangi2)
+abline(m5.4)
+## loop over states
+for (i in 1:length(m.resid)) {
+  x <- d$MedianAgeMarriage.s[i] # x location of line segment
+  y <- d$Marriage.s[i] # observed endpoint of line segment
+  
+  # draw line segment
+  lines(c(x, x), c(mu[i], y), lwd = 0.5, col = col.alpha("black", 0.7))
+}
+```
+
+Stan model:
+
+```{stan output.var = "m5.4.stan"}
+data {
+  int<lower = 0> N;
+  vector[N] Marriage_s;
+  vector[N] MedianAgeMarriage_s;
+}
+
+parameters {
+  real a;
+  real b;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[N] mu;
+  mu = a + b * MedianAgeMarriage_s;
+  
+  // prior
+  a ~ normal(0, 10);
+  b ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  Marriage_s ~ normal(mu, sigma);
+}
+```
+
+```{r echo = FALSE}
+dat <- list(N = NROW(d),
+            MedianAgeMarriage_s = d$MedianAgeMarriage.s,
+            Marriage_s = d$Marriage.s)
+
+m5.4.stan.fit <- sampling(m5.4.stan,
+                          data = dat)
+
+post <- as.matrix(m5.4.stan.fit)
+
+mu <- post[ , "a"] + d$MedianAgeMarriage.s %*% t(post[ , "b"])
+mu <- rowMeans(mu)
+resid <- d$Marriage.s - mu
+
+ggplot() +
+  geom_segment(aes(x = d$MedianAgeMarriage.s,
+                   xend = d$MedianAgeMarriage.s,
+                   y = mu,
+                   yend = d$Marriage.s)) +
+  geom_point(data = d,
+             aes(x = MedianAgeMarriage.s, y = Marriage.s),
+             shape = 21,
+             color = "blue",
+             fill = "white") +
+  geom_abline(aes(slope = mean(post[ , "b"]),
+                  intercept = mean(post[ , "a"])))
+```
+
+
+#### Counterfactual plots
+
+```{r}
+# prepare new counterfactual data
+A.avg <- mean(d$MedianAgeMarriage.s)
+R.seq <- seq(from = -3, to = 3, length.out = 30)
+pred.data <- data.frame(Marriage.s = R.seq,
+                        MedianAgeMarriage.s = A.avg)
+
+# compute counterfactual mean divorce (mu)
+mu <- link(m5.3, data = pred.data)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+# simulate counterfactual divorce outcomes
+R.sim <- sim(m5.3, data = pred.data, n = 10000)
+R.PI <- apply(R.sim, 2, PI)
+
+# display predictions, hiding raw data with type = "n"
+plot(Divorce ~ Marriage.s, data = d, type = "n")
+mtext("MedianAgeMarriage.s = 0")
+lines(R.seq, mu.mean)
+shade(mu.PI, R.seq)
+shade(R.PI, R.seq)
+
+# From Stan model -------------------------------------------------------------
+## get draws for parameters
+post <- as.matrix(m5.3.stan.fit)
+
+## setup new data
+nd <- 
+  expand.grid(median_age_s = seq(-3, 3),
+              marriage_s = seq(-3, 3)) %>%
+  as.matrix()
+
+## estimate mu
+mu <- post[ , 1] + post[ , 2:3] %*% t(nd)
+
+## get stats on mu
+avg <- colMeans(mu)
+hdi <- apply(mu, 2, HDInterval::hdi)
+
+## simulate divorce rate
+iter <- 1e4
+y_hat <- matrix(nrow = iter, ncol = NROW(nd))
+for(i in 1:NROW(nd)) y_hat[,i] <- rnorm(iter, post[,1] + post[,2:3] %*% as.matrix(nd[i,]), post[,4])
+
+## get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_hdi <- apply(y_hat, 2, HDInterval::hdi)
+nd <- 
+  as_tibble(nd) %>%
+  bind_cols(avg = avg, 
+            mu_hdi_l = hdi[1,], 
+            mu_hdi_h = hdi[2,],
+            y_hdi_l = y_hat_hdi[1,],
+            y_hdi_h = y_hat_hdi[2,])
+
+ggplot(nd, aes(x = median_age_s, y = avg, group = marriage_s)) + 
+  geom_line(data = nd,
+            color = 'gray90') +
+  geom_ribbon(data = nd %>% filter(marriage_s == 0),
+              aes(x = median_age_s, ymin = mu_hdi_l, ymax = mu_hdi_h), alpha = .1) +
+  geom_ribbon(data = nd %>% filter(marriage_s == 0),
+              aes(x = median_age_s, ymin = y_hdi_l, ymax = y_hdi_h), alpha = .1) +
+  geom_line(data = nd %>% filter(marriage_s == 0),
+            aes(x = median_age_s, y = avg)) + 
+  geom_text(data = nd %>% filter(median_age_s == min(median_age_s)), 
+            aes(label = marriage_s, x = median_age_s - 0.1, y = avg), size = 2) +
+  geom_text(data = nd %>% filter(median_age_s == max(median_age_s)), 
+            aes(label = marriage_s, x = median_age_s + 0.1, y = avg), size = 2) +
+  labs(x = 'Standardized Median Age of Marriage', y = 'Divorce rate') 
+```
+
+#### Posterior prediction plots
+
+Useful for checking the model fit and where the model fails.
+
+```{r}
+# call link without specifying new data so it uses orignial data
+mu <- link(m5.3)
+
+# summarize samples across cases
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+# simulate observations
+# again no new data, so it uses original data
+divorce.sim <- sim(m5.3, n = 10000)
+divorce.PI <- apply(divorce.sim, 2, PI)
+
+# plot predicted values against observed
+plot(mu.mean ~ d$Divorce, col = rangi2, ylim = range(mu.PI), 
+     xlab = "Observed Divorce", ylab = "Predicted Divorce")
+abline(a = 0, b = 1, lty = 2)
+for (i in 1:nrow(d)) {
+  lines(rep(d$Divorce[i], 2), c(mu.PI[1, i], mu.PI[2, i]), col = rangi2)
+}
+identify(x = d$Divorce, y = mu.mean, labels = d$Loc, cex = 0.8)
+
+# From Stan model -------------------------------------------------------------
+## estimate mu
+mu <- post[ , 1] + post[ , 2:3] %*% t(d[ , 14:15])
+
+## get stats on mu
+avg <- colMeans(mu)
+hdi <- apply(mu, 2, HDInterval::hdi)
+
+## simulate divorce rate
+iter <- 1e4
+y_hat <- matrix(nrow = iter, ncol = NROW(d[ , 14:15]))
+for(i in 1:NROW(d[ , 14:15])) y_hat[ , i] <- rnorm(iter, post[ , 1] + post[ , 2:3] %*% t(d[i, 14:15]), post[ , 4])
+
+## get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_hdi <- apply(y_hat, 2, HDInterval::hdi)
+d <- d %>% mutate(mu = avg,
+                  mu_hdi_l = hdi[1,],
+                  mu_hdi_h = hdi[2,],
+                  y_hdi_l = y_hat_hdi[1,],
+                  y_hdi_h = y_hat_hdi[2,])
+
+ggplot() + 
+  geom_abline(intercept = 0, slope = 1, 
+              linetype = 'dashed', color = 'gray70') +
+  geom_segment(data = d,
+               aes(x = Divorce, xend = Divorce, 
+                   y = mu_hdi_l, yend = mu_hdi_h),
+               color = 'dodgerblue') +
+  geom_point(data = d,
+             aes(Divorce, mu), 
+             shape = 1, color = 'dodgerblue', fill = 'white') +
+  labs(x = "Observed divorce rate", y = 'Estimated average divorce rate',
+       subtitle = 'Observed versus\nestimated for each state')
+```
+
+Residual plot:
+
+```{r}
+# compute residuals
+divorce.resid <- d$Divorce - mu.mean
+
+# get ordering by divorce rate
+o <- order(divorce.resid)
+
+# plot
+dotchart(divorce.resid[o], labels = d$Loc[o], xlim = c(-6, 5), cex = 0.6)
+abline(v = 0, col = col.alpha("black", 0.2))
+for (i in 1:nrow(d)) {
+  j <- o[i] # which state order
+  lines(d$Divorce[j] - c(mu.PI[1, j], mu.PI[2, j]), rep(i, 2))
+  points(d$Divorce[j] - c(divorce.PI[1, j], divorce.PI[2, j]), rep(i, 2), 
+         pch = 3, cex = 0.6, col = "gray")
+}
+```
+
+## Masked Relationship
+
+```{r}
+library(rethinking)
+data(milk)
+d <- milk
+str(d)
+```
+
+Consider a bivariate regression between kilocarories and neocotrex percent:
+
+```{r}
+m5.5 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bn * neocortex.perc,
+        a ~ dnorm(0, 100),
+        bn ~ dnorm(0, 1),
+        sigma ~ dunif(0, 1)),
+  data = d
+)
+```
+
+This error arrises because of the missing values in `neocortex.perc`
+
+```{r}
+d$neocortex.perc
+
+# drop missing values
+dcc <- d[complete.cases(d), ]
+
+# re-estimate the model
+m5.5 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bn * neocortex.perc,
+        a ~ dnorm(0, 100),
+        bn ~ dnorm(0, 1),
+        sigma ~ dunif(0, 1)),
+  data = dcc
+)
+
+# results
+precis(m5.5, digits = 3)
+```
+
+Plot the predicted mean and 89% interval for the mean:
+
+```{r}
+np.seq <- 0:100
+pred.data <- data.frame(neocortex.perc = np.seq)
+
+mu <- link(m5.5, data = pred.data, n = 10000)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+plot(kcal.per.g ~ neocortex.perc, data = dcc, col = rangi2)
+lines(np.seq, mu.mean)
+lines(np.seq, mu.PI[1, ], lty = 2)
+lines(np.seq, mu.PI[2, ], lty = 2)
+```
+
+Now let's add in the natural log of `mass`:
+
+```{r}
+dcc$log.mass = log(dcc$mass)
+
+# fit the model
+m5.6 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bm * log.mass,
+        a ~ dnorm(0, 100),
+        bm ~ dnorm(0, 1),
+        sigma ~ dunif(0, 1)),
+  data = dcc
+)
+
+precis(m5.6)
+
+# plot
+mp.seq <- 0:100
+pred.data <- data.frame(log.mass = mp.seq)
+
+mu <- link(m5.6, data = pred.data, n = 10000)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+plot(kcal.per.g ~ log.mass, data = dcc, col = rangi2)
+lines(mp.seq, mu.mean)
+lines(mp.seq, mu.PI[1, ], lty = 2)
+lines(mp.seq, mu.PI[2, ], lty = 2)
+```
+
+Now both variables together:
+
+```{r}
+# fit the model
+m5.7 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bn * neocortex.perc + bm * log.mass,
+        a ~ dnorm(0, 100),
+        bn ~ dnorm(0, 1),
+        bm ~ dnorm(0, 1),
+        sigma ~ dunif(0, 1)),
+  data = dcc
+)
+
+precis(m5.7)
+
+# plot
+mean.log.mass <- mean(log(dcc$mass))
+np.seq <- 0:100
+pred.data <- data.frame(neocortex.perc = np.seq,
+                        log.mass = mean.log.mass)
+
+mu <- link(m5.7, data = pred.data, n = 10000)
+mu.mean <- apply(mu, 2, mean)
+mu.PI <- apply(mu, 2, PI)
+
+mp.seq <- 0:100
+pred.data <- data.frame(log.mass = mp.seq)
+
+plot(kcal.per.g ~ neocortex.perc, data = dcc, col = rangi2)
+lines(mp.seq, mu.mean)
+lines(mp.seq, mu.PI[1, ], lty = 2)
+lines(mp.seq, mu.PI[2, ], lty = 2)
+```
+
+## When adding variables hurts
+
+### Multicollinearity
+
+This is a simulation predicting an individual's height using the length of his or her legs as predictor variables.
+
+```{r}
+N <- 100 # number of individuals
+height <- rnorm(N, 10, 2) # sim total height of each
+leg_prop <- runif(N, 0.4, 0.5)
+leg_left <- leg_prop * height + rnorm(N, 0, 0.02) # sim left leg as proportion + error
+leg_right <- leg_prop * height + rnorm(N, 0, 0.02) # sim right leg as proportion + error
+d <- data.frame(height, leg_left, leg_right) # combine into data frame
+
+# fit a model
+m5.8 <- map(
+  alist(height ~ dnorm(mu, sigma),
+        mu <- a + bl * leg_left + br * leg_right,
+        a ~ dnorm(10, 100),
+        bl ~ dnorm(2, 10),
+        br ~ dnorm(2, 10),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.8)
+
+plot(precis(m5.8))
+
+post <- extract.samples(m5.8)
+plot(bl ~ br, post, col = col.alpha(rangi2, 0.1), pch = 16)
+
+
+# plotting the posterior sum
+sum_blbr <- post$bl + post$br
+dens(sum_blbr, col = rangi2, lwd = 2, xlab = "Sum of bl and br")
+```
+
+Fitting a model with only one of these predictors will produce almost the same posterior mean:
+
+```{r}
+# fit a model
+m5.9 <- map(
+  alist(height ~ dnorm(mu, sigma),
+        mu <- a + bl * leg_left,
+        a ~ dnorm(10, 100),
+        bl ~ dnorm(2, 10),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.9)
+```
+
+Back to the milk data
+
+```{r}
+library(rethinking)
+data(milk)
+d <- milk
+
+# k.cal.per.g regressed on perc.fat
+m5.10 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bf * perc.fat,
+        a ~ dnorm(0.6, 10),
+        bf ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+# kcal.per.g regressed on perc.lactose
+m5.11 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bl * perc.lactose,
+        a ~ dnorm(0.6, 10),
+        bl ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.10, digits = 3)
+precis(m5.11, digits = 3)
+
+# now including both
+m5.12 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + bf * perc.fat + bl * perc.lactose,
+        a ~ dnorm(0.6, 10),
+        bf ~ dnorm(0, 1),
+        bl ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.12, digits = 3)
+
+pairs(~ kcal.per.g + perc.fat + perc.lactose, data = d, col = rangi2)
+
+cor(d$perc.fat, d$perc.lactose)
+```
+
+### Post-treatment bias
+
+SUppose we want to know the difference in growth under different antifungal soil treatments, because fungus on the plants tends to reduce their growth. 
+
+```{r}
+# number of plants
+N <- 100
+
+# simulate initial heights
+h0 <- rnorm(N, 10, 2)
+
+# assign treatments and simulate fungus and growth
+treatment <- rep(0:1, each = N / 2)
+fungus <- rbinom(N, size = 1, prob = 0.5 - treatment * 0.4)
+h1 <- h0 + rnorm(N, 5 - 3 * fungus)
+
+# compose a clean data frame
+d <- data.frame(h0 = h0, h1 = h1, treatment = treatment, fungus = fungus)
+
+# fit model
+m5.13 <- map(
+  alist(h1 ~ dnorm(mu, sigma),
+        mu <- a + bh * h0 + bt * treatment + bf * fungus,
+        a ~ dnorm(0, 100),
+        c(bh, bt, bf) ~ dnorm(0, 10),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.13)
+```
+
+We know that the treament is important so what is happening is that fungus is mostly a consequence of treatment. Thus, this model is really asking, "once we already know whether or not a plant developed fungus, does the soil treatment matter?" What we really want to know is the impact of treatment on growth:
+
+```{r}
+# fit model
+m5.14 <- map(
+  alist(h1 ~ dnorm(mu, sigma),
+        mu <- a + bh * h0 + bt * treatment,
+        a ~ dnorm(0, 100),
+        c(bh, bt) ~ dnorm(0, 10),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+
+precis(m5.14)
+```
+
+## Categorical variables
+
+### Binary categories
+
+```{r}
+data(Howell1)
+d <- Howell1
+str(d)
+
+# fit model
+m5.15 <- map(
+  alist(height ~ dnorm(mu, sigma),
+        mu <- a + bm * male,
+        a ~ dnorm(178, 100),
+        bm ~ dnorm(0, 10),
+        sigma ~ dunif(0, 50)),
+  data = d
+)
+
+m5.15.stan.rt <- map2stan(m5.15)
+stancode(m5.15.stan.rt)
+precis(m5.15)
+
+# posterior of a and bm
+post <- extract.samples(m5.15)
+mu.male <- post$a + post$bm
+PI(mu.male)
+```
+
+```{stan output.var = "m5.15.stan"}
+data {
+  int<lower = 0> N;
+  vector[N] height;
+  vector[N] male;
+}
+
+parameters {
+  real a;
+  real bm;
+  real sigma;
+}
+
+model {
+  vector[N] mu;
+  mu = a + bm * male;
+  
+  a ~ normal(178, 100);
+  bm ~ normal(0, 10);
+  sigma ~ uniform(0, 50);
+  
+  height ~ normal(mu, sigma);
+}
+```
+
+```{r}
+dat <- list(N = NROW(d),
+            height = d$height,
+            male = d$male)
+
+m5.15.stan.fit <- sampling(m5.15.stan,
+                           data = dat)
+precis(m5.15.stan.fit)
+```
+
+
+#### Many categories
+
+```{r}
+data(milk)
+d <- milk
+unique(d$clade)
+
+# create categories
+(d$clade_NWM <- ifelse(d$clade == "New World Monkey", 1, 0))
+d$clade_OWM <- ifelse(d$clade == "Old World Monkey", 1, 0)
+d$clade_S <- ifelse(d$clade == "Strepsirrhine", 1, 0)
+
+# fit the model
+m5.16 <- map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a + b_NWM * clade_NWM + b_OWM * clade_OWM + b_S * clade_S,
+        a ~ dnorm(0.6, 10),
+        b_NWM ~ dnorm(0, 1),
+        b_OWM ~ dnorm(0, 1),
+        bS ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+precis(m5.16)
+plot(precis(m5.16))
+m5.16.stan.rt <- map2stan(m5.16)
+
+## or with index variables
+(d$clade_id <- coerce_index(d$clade))
+m5.16.alt <- rethinking::map(
+  alist(kcal.per.g ~ dnorm(mu, sigma),
+        mu <- a[clade_id],
+        a[clade_id] ~ dnorm(0.6, 10),
+        sigma ~ dunif(0, 10)),
+  data = d
+)
+precis(m5.16.alt, depth = 2)
+plot(precis(m5.16.alt, depth = 2))
+m5.16.alt.stan.rt <- map2stan(m5.16.alt)
+
+stancode(m5.16.stan.rt)
+stancode(m5.16.alt.stan.rt)
+```
+
+```{stan output.var = "m5.16.stan"}
+data {
+  int n;
+  vector[n] kcal_per_g;
+  vector[n] clade_NWM;
+  vector[n] clade_OWM;
+  vector[n] clade_s;
+}
+
+parameters {
+  real a;
+  real b_NWM;
+  real b_OWM;
+  real b_s;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[n] mu;
+  mu = a + b_NWM * clade_NWM + b_OWM * clade_OWM + b_s * clade_s;
+  
+  // priors
+  a ~ normal(0.6, 10);
+  b_NWM ~ normal(0, 1);
+  b_OWM ~ normal(0, 1);
+  b_s ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  kcal_per_g ~ normal(mu, sigma);
+}
+```
+
+Or the model with index variables:
+
+```{stan output.var = "m5.16.stan.alt"}
+data {
+  int n;
+  int n_clade;
+  real kcal_per_g[n];
+  int clade[n];
+}
+
+parameters {
+  vector[n_clade] a;
+  real sigma;
+}
+
+model {
+  //linear model
+  vector[n] mu;
+  for (i in 1:n) {
+    mu[i] = a[clade[i]];
+  }
+  
+  // priors
+  a ~ normal(0.6, 10);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  kcal_per_g ~ normal(mu, sigma);
+}
+
+generated quantities {
+  vector[n] mu;
+  for (i in 1:n) {
+    mu[i] = a[clade[i]];
+  }
+}
+```
+
+
+```{r}
+devtools::install_github("mjskay/tidybayes")
+library(tidybayes)
+library(tidyverse)
+library(magrittr)
+library(dplyr)
+library(forcats)
+library(ggplot2)
+library(ggstance)
+library(emmeans)
+library(broom)
+library(rstan)
+library(rstanarm)
+library(brms)
+library(modelr)
+library(bayesplot)
+library(MCMCglmm)
+library(cowplot)
+library(RColorBrewer)
+library(gganimate)
+library(ggpubr)
+
+dat <- 
+  d %>%
+  rename(kcal_per_g = kcal.per.g, 
+         clade_NWM = clade.NWM,
+         clade_OWM = clade.OWM,
+         clade_s = clade.S) %>%
+  compose_data()
+
+m5.16.stan.fit <- sampling(m5.16.stan, data = dat)
+print(m5.16.stan.fit)
+
+m5.16.alt.stan.fit <- sampling(m5.16.stan.alt, data = dat)
+precis(m5.16.alt.stan.fit, depth = 2)
+
+str(rstan::extract(m5.16.stan.fit))
+str(rstan::extract(m5.16.alt.stan.fit))
+
+m5.16.alt.stan.fit %>%
+  recover_types(d) %>%
+  spread_draws(a[clade]) %>%
+  head(10)
+
+m5.16.alt.stan.fit %<>% recover_types(d)
+
+## Intervals
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade]) %>%
+  median_hdi()
+
+## plotting
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade]) %>%
+  median_hdi() %>%
+  ggplot(aes(y = fct_rev(clade), x = a, xmin = .lower, xmax = .upper)) +
+  geom_pointintervalh()
+
+# or
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade]) %>%
+  ggplot(aes(y = fct_rev(clade), x = a)) +
+  stat_pointintervalh(.width = c(0.50, 0.89))
+
+## Violin plots
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade]) %>%
+  ggplot(aes(y = fct_rev(clade), x = a)) +
+  geom_violinh(color = NA, fill = "orange", alpha = 0.5) +
+  stat_pointintervalh(.width = c(0.89, 0.66)) +
+  theme_pubr()
+
+# or
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade]) %>%
+  ggplot(aes(y = fct_rev(clade), x = a)) +
+  stat_halfeyeh() +
+  theme_pubr()
+
+## Posterior predictions
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade], sigma) %>%
+  mutate(y_rep = rnorm(n(), a, sigma)) %>%
+  ggplot(aes(x = y_rep)) +
+  stat_density(fill = "red", alpha = 0.5) +
+  theme_pubr()
+
+# now compare predictive intervals to the data
+m5.16.alt.stan.fit %>%
+  spread_draws(a[clade], sigma) %>%
+  mutate(y_rep = rnorm(n(), a, sigma)) %>%
+  median_hdi(y_rep, .width = c(0.95, 0.89, 0.50)) %>%
+  ggplot(aes(x = y_rep, y = fct_rev(clade))) +
+  geom_intervalh() +
+  geom_point(aes(x = kcal.per.g), data = d) +
+  scale_color_brewer() +
+  theme_pubr()
+```
+
+
+To get posterior distributions of the average milk energy in each category, use samples:
+
+```{r}
+# sample posterior
+post <- extract.samples(m5.16)
+
+# compute averages for each category
+mu.ape <- post$a
+mu.NWM <- post$a + post$b.NWM
+mu.OWM <- post$a + post$b.OWM
+mu.S <- post$a + post$b.S
+
+# summarize using precis
+precis(data.frame(mu.ape, mu.NWM, mu.OWM, mu.S))
+```
+
+What if we wanted to know the difference between the two monkey groups? We just subtract the estimated means to get a difference:
+
+```{r}
+diff.NWM.OWM <- mu.NWM - mu.OWM
+quantile(diff.NWM.OWM, probs = c(0.025, 0.5, 0.975))
+```
+
