@@ -1,0 +1,232 @@
+---
+title: "Statistical Rethinking: Chapter 11: Monsters and Mixtures"
+output: html_notebook
+---
+
+# Ordered categorical outcomes
+
+Ordered outcome modesl typically rely on a cumulative link function. The cumulative probability of a value is the probability of that value or any smaller value. In the context of ordered categories, the cumulative probability of 3 is the sum of the probabilities of 3, 2, and 1. By linking a linear model to cumulative probability, it is possible to guarantee the ordering of the outcomes. This is done in 2 steps:
+
+1. Explain how to parameterize a distribution of outcomes on the scale of log-cumulative-odds.
+
+2. Introduce a predictor to these log-cummulative-odds values, allowing you to model associations between predictors and the outcome while obeying the ordered nature of prediction. 
+
+### Example from moral intuition
+
+```{r}
+library(rethinking)
+data(Trolley)
+d <- Trolley
+```
+
+The outcome of interest is `response` which is an interger from 1 to 7 indicating how morally permissible the participant found the action to be taken i nthe story. 
+
+### Describing an ordered distribution with intercepts
+
+```{r}
+simplehist(d$response, xlim = c(1, 7), xlab = "response")
+```
+
+Now let's redescribe the data this histogram on the log-cumulative-odds scale. This just means constructing the odds of a cumulative probability and then taking a logarithm. This is equlivelant to the comulative logit link which is log-comulative-odds. 
+
+```{r}
+# discrete proportion of each response value
+pr_k <- table(d$response) / nrow(d)
+
+# cumsum converts to cumulative proportions
+cum_pr_k <- cumsum(pr_k)
+
+# plot
+plot(1:7, cum_pr_k, type = "b", xlab = "response", ylab = "cumulative proportion", ylim = c(0, 1))
+```
+
+Now we need a series of intercept parameters to stand in for the cumulative probability of each outcome:
+
+```{r}
+logit <- function(x) log(x / (1 - x)) # convenience function
+(lco <- logit(cum_pr_k))
+```
+
+```{r}
+m11.1 <- map(
+  alist(response ~ dordlogit(phi, c(a1, a2, a3, a4, a5, a6)),
+        phi <- 0,
+        c(a1, a2, a3, a4, a5, a6) ~ dnorm(0, 10)),
+  data = d,
+  start = list(a1 = -2, a2 = -1, a3 = 0, a4 = 1, a5 = 2, a6 = 2.5)
+)
+precis(m11.1)
+
+# to get cumulative probabilities back:
+logistic(coef(m11.1))
+
+# now with Stan
+m11.1stan <- map2stan(
+  alist(response ~ dordlogit(phi, cutpoints),
+        phi <- 0,
+        cutpoints ~ dnorm(0, 10)),
+  data = list(response = d$response),
+  start = list(cutpoints = c(-2, -1, 0, 1, 2, 2.5)),
+  chains = 2
+)
+precis(m11.1stan, depth = 2)
+
+# with predictors
+m11.2 <- map(
+  alist(response ~ dordlogit(phi, c(a1, a2, a3, a4, a5, a6)),
+        phi <- bA * action + bI * intention + bC * contact,
+        c(bA, bI, bC) ~ dnorm(0, 10),
+        c(a1, a2, a3, a4, a5, a6) ~ dnorm(0, 10)),
+  data = d,
+  start = list(a1 = -1.9, a2 = -1.2, a3 = -0.7, a4 = 0.2, a5 = 0.9, a6 = 1.8)
+)
+precis(m11.2)
+```
+
+
+# Zero-inflated outcomes
+
+A mixture model essentially uses more than one probability distribution to model a mixture of causes, or more than one likelihood for the same outcome variable. Count variables are especially prone to needing mixture treatment because a count of zeros can arise more than one way. A "zero" means that nothing happened, and nothing can happen either because the rate of events is low or rather because the process that generates events failed to get started. 
+
+## Zero-inflated Poisson
+
+We want to estimate the number of days the monks spent drinking. A zero can arise from two processes: (1) the monks spent the day drinking and (2) they worked that day but nevertheless failed to complete any manuscripts. Let $p$ be the probability the monks spend the day drinking. Let $\lambda$ be the mean number of manuscripts completed, when the monks work. Thus, we need a likelihood function that mixes these two processes. The likelihood of observing a zero is:
+
+$$
+\begin{aligned}
+\text{Pr} (0 | p, \lambda) &= \text{Pr}(\text{drink} | p) + \text{Pr}(\text{work} | p) \times \text{Pr}(0 | \lambda) \\
+&= p + (1 - p) \exp(- \lambda)
+\end{aligned}
+$$
+
+This says: the probability of observing a zero is the probability that the monks didn't drink OR ($+$) the probability that the monks worked AND ($\times$) failed to finish anything. 
+
+The likelihood of observing a non-zero is:
+
+$$
+\begin{aligned}
+\text{Pr} (0 | p, \lambda) &= \text{Pr}(\text{drink} | p)(0) + \text{Pr}(\text{work} | p) \times \text{Pr}(y | \lambda) \\
+&= (1 - p) \frac{\lambda^{y} \exp(- \lambda)}{y!} 
+\end{aligned}
+$$
+Since drinking monks never produce $y > 0$, the expression above is just the chance the monks both work, $1 - p$, and finish $y$ manuscripts. Define ZIPoisson as the distribution above, with parameters $p$ (probability of a zero) and $\lambda$ (mean of Poisson) to describe its shape. Then a zero-inflated Poisson regression takes the form: 
+
+$$
+\begin{aligned}
+y_i &\sim \text{ZIPoisson}(p_i, \lambda_i) \\
+\text{logit}(p_i) &= \alpha_p + \beta_p x_i \\
+\text{log}(\lambda_i) &= \alpha_\lambda + \beta_\lambda x_i
+\end{aligned}
+$$
+
+Notice that there are two linear models and two link functions, one for each process in the ZIPoisson. 
+
+```{r}
+# define parameters
+prob_drink <- 0.2 # 20% of days
+rate_work <- 1 # average 1 manuscript per day
+
+# sample one year of production
+N <- 365
+
+# simulate days monks drink
+drink <- rbinom(N, 1, prob_drink)
+
+# simulate manuscripts completed
+y <- (1 - drink) * rpois(N, rate_work)
+
+# look at dependent variable
+simplehist(y, xlab = "manuscripts completed", lwd = 4)
+zeros_drink <- sum(drink)
+zeros_work <- sum(y == 0 & drink == 0)
+zeros_total <- sum(y == 0)
+lines(c(0, 0), c(zeros_work, zeros_total), lwd = 4, col = rangi2)
+
+# fit the model
+m11.4 <- map(
+  alist(y ~ dzipois(p, lambda),
+        logit(p) <- ap,
+        log(lambda) <- al,
+        ap ~ dnorm(0, 1),
+        al ~ dnorm(0, 10)),
+  data = list(y = y)
+)
+precis(m11.4)
+
+# on the natural scale, the estimates are:
+logistic(-1.23) # probability drink
+exp(0.05) # rate finish manuscripts, when not drinking
+```
+
+# Over-dispersed outcomes
+
+One symptom that something important has been omitted from a count model is over-dispersion. The variance of a variable is sometimes called its dispersion. When the observed varance exceeds its expected value, this implies that some omitted variable is producing additional dispersion in the observed counts. The best solution to this problem is to discover the omitted source of dispersion and include it in the model. When no additional variables are available, we can still try to fix it. 
+
+The first strategy is to use a continuious mixture model in which a linear model is attached not to the observations themselves but rather to a distribution of observations. The second strategy is to use multilevel models to estimate both the residuals of each observations and the distribution of those residuals. 
+
+## Beta-binomial
+
+A beta-binomial assumes that each binomial count observation has its own probability of success. The model estimates a distribution of probabilities of success across cases, instead of a single probability of success and predictor variables change this distribution rather than directly determining the probability of each success. The beta distribution has two parameters, an average probability and a shape parameter. 
+
+```{r}
+pbar <- 0.5
+theta <- 5
+curve(dbeta2(x, pbar, theta), from = 0, to = 1, xlab = "probability", ylab = "Density")
+```
+
+$$
+\begin{aligned}
+A_i &\sim \text{BetaBinomial}(n_i, \bar{p_i}, \theta) \\
+\text{logit}(\bar{p_i}) &= \alpha \\
+\alpha &\sim \text{Normal}(0, 10) \\
+\theta &\sim \text{HalfCauchy}(0, 1)
+\end{aligned}
+$$
+
+`A` is admit, and the size `n` is `applications`. 
+
+```{r}
+library(rethinking)
+data("UCBadmit")
+d <- UCBadmit
+
+m11.5 <- map2stan(
+  alist(admit ~ dbetabinom(applications, pbar, theta),
+        logit(pbar) <- a,
+        a ~ dnorm(0, 2),
+        theta ~ dexp(1)),
+  data = d,
+  constraints = list(theta = "lower = 0"),
+  start = list(theta = 3),
+  iter = 4000,
+  warmup = 1000,
+  chains = 2, 
+  cores = 2
+)
+precis(m11.5)
+```
+
+The implied average probability of admission, across departments, is:
+
+```{r}
+post <- extract.samples(m11.5)
+quantile(logistic(post$a, c(0.025, 0.5, 0.975)))
+
+postcheck(m11.5)
+```
+
+## Negative-binomial or gamma-Poisson
+
+A negative-binomial model, more usefully called a gamma-Poisson model assumes that each Poisson count observation has its own rate. It estimates the shape of a gamma distribution to describe the Poisson rates across cases. Predictor variables adjust the shape of this distribution, not the expected value of each observation. The gamma-Poisson model is very much like a beta-binomial model. with the gamma distribution of rates (or expected values) replacing the beta distribution of probabilities of success. 
+
+```{r}
+mu <- 3
+theta <- 2
+curve(dgamma2(x, mu, theta), from = 0, to = 10)
+```
+
+
+
+
+
+
