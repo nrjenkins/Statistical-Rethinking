@@ -1,0 +1,230 @@
+---
+title: "Statistical Rethinking: Chapter 3"
+output: html_notebook
+---
+
+What is the probability of a positive test result given that you are a vampire?
+
+$$
+Pr(\text{vampire} \mid \text{positive}) = \frac{Pr(\text{positive} \mid \text{vampire}) Pr(\text{vampire})}{Pr(\text{positive})}
+$$
+
+If the test correctly detects vampirism 95% of the time, then $Pr(\text{positive} \mid \text{vampire}) = 0.95$. The false positive rate is 1% so, $Pr(\text{positive} \mid \text{mortal}) = 0.01$ and only 0.1% of the population is a vampire, $Pr(\text{vampire}) = 0.001$. Given theses probabilities, the probability that you are a vampire given a positive test result is:
+
+```{r}
+PrPV <- 0.95
+PrPM <- 0.01
+PrV <- 0.001
+PrP <- PrPV * PrV + PrPM * (1 - PrV) # Probability of a positive test result
+PrVP <- (PrPV * PrV) / PrP
+PrVP
+```
+
+# Sampling from a grid-approximate posterior
+
+From the globe tossing example: 
+
+```{r}
+n <- 100
+
+# Define Grid
+p_grid <- seq(from = 0, to = 1, length.out = n)
+
+# Define Prior
+prior <- rep(1, n)
+
+# Compute likelihood at each value in grid
+likelihood <- dbinom(x = 6, size = 9, prob = p_grid)
+
+# Compute product of likelihood and proir
+unstd.posterior <- likelihood * prior
+
+# Standardize the posterior, so it sums to 1
+posterior <- unstd.posterior / sum(unstd.posterior)
+```
+
+Now, lets draw 10,000 samples from the posterior:
+
+```{r}
+# Draw 10,000 samples from the parameters in p_grid where the probability of 
+# each paramter is given by posterior.
+samples <- sample(x = p_grid, size = 10000, replace = TRUE, prob = posterior)
+
+# Plot the posteriior (this gives a top-down view)
+plot(samples)
+
+# Plot the posterior density
+library(rethinking)
+dens(samples)
+```
+
+# Sampling to summarize
+
+## Intervals of defined boundaries
+
+What is the posterior probability that the proportion of water is less than 0.5?
+
+```{r}
+# add up posterior probability where p < 0.5
+sum(posterior[p_grid < 0.5])
+
+# or
+sum(samples < 0.5) / 10000
+```
+
+So, 17% of the posterior probability is below 0.5. 
+
+How much posterior probability lies between 0.5 and 0.75?
+
+```{r}
+sum(samples > 0.5 & samples < 0.75) / 10000
+```
+
+## Intervals of defined mass
+
+Posterior intervals report two parameter values that contain between them a specified amount of posterior probability, a probability mass. Suppose we want to know the boundaaries of the lower 80% posterior probability. You know this interval starts at $p = 0$. To find out where it stops, think of the samples as data and ask where the 80th percentile lies: 
+
+```{r}
+quantile(samples, 0.8)
+
+# To find the middle interval between the 10th and 90th percentiles
+quantile(samples, c(0.1, 0.9))
+```
+
+Above, we calculated percentile intervals. Percentile intervals communicate the shape of the distribution as long as it is mostly symmetric. 
+
+```{r}
+n <- 1000
+
+# Define Grid
+p_grid <- seq(from = 0, to = 1, length.out = n)
+
+# Define Prior
+prior <- rep(1, n)
+
+# Compute likelihood at each value in grid
+likelihood <- dbinom(x = 3, size = 3, prob = p_grid)
+
+# Compute product of likelihood and proir
+unstd.posterior <- likelihood * prior
+
+# Standardize the posterior, so it sums to 1
+posterior <- unstd.posterior / sum(unstd.posterior)
+
+# Draw samples from the posterior
+samples <- sample(p_grid, size = n, replace = TRUE, prob = posterior)
+
+# Percentile interval
+PI(samples, prob = 0.5)
+```
+
+The percentile interval excludes the most probable parameter values. In contrast the Highest Posterior Density Interval (HPDI). The HPDI is the narrowest interval containing the specified probability mass. 
+
+```{r}
+HPDI(samples, prob = 0.5)
+```
+
+This interval captures the parameters with highest posterior probability. 
+
+## Point Estimates
+
+The parameter with the highest posterior probability, a maximum a posteriori (MAP) estimate, can be cumputed as follows:
+
+```{r}
+p_grid[which.max(posterior)]
+```
+
+Or, this value can be approximated:
+
+```{r}
+chainmode(samples, adj = 0.01)
+```
+
+We could also report eh mean or median:
+
+```{r}
+mean(samples)
+median(samples)
+```
+
+To decide between these, it is good to construct a loss function which tells you the cost associated with using any particular point estimate. Suppose we choose $p = 0.5$ as the decision. Then the weighted average loss is given by:
+
+```{r}
+sum(posterior * abs(0.5 - p_grid))
+```
+
+To repeat this for every possibly decision, we use:
+
+```{r}
+loss <- sapply(p_grid, function(d) sum(posterior * abs(d - p_grid)))
+head(loss)
+```
+
+`loss` reports a list of loss values, one for each possible decision, corresponding to the values in `p_grid`. With this we can find the parameter that minimizes the loss:
+
+```{r}
+p_grid[which.min(loss)]
+```
+
+which is the posterior median. 
+
+
+# Sampling to simulate prediction
+
+It is useful to simulate observations from the model used in order to:
+
+1. Check the model: afte a model is fit to data, it is worth simulating implied observations, to check both wether the fit worked correctly and to investigate model behavior.
+
+2. Software validation: In order to be sure that out model fitting software is working, it helps to simulate observations under a known model and then attempt to recover the values of the parameters the data were simulated under. 
+
+3. Research design: If you can simulate observations from your hypothesis, then you can evaluate whether the research design can be effective. In a narrow sense, this means doing power analysis, but the possibilities are much broader. 
+
+4. Forecasting: Estimates can be used to simulate new predictions, for new cases and future observations. These forecasts can be useful as applied prediction, but also for model criticism and revision. 
+
+## Dummy data
+
+Likelihood functions work in both directions. Given a realized observation, the likelihood function says how plausible the observation is. And given only the parameters, the likelihood defines a distribution of possible observations that we can sample from, to simulate observation. 
+
+If we suppose that we have 2 tosses, $n = 2$ then there are only 3 possible observations: 0 water, 1 water, and 2 water. We can compute the likelihood of each for any given value of $p$. Let's use $p = 0.7$.
+
+```{r}
+dbinom(0:2, size = 2, prob = 0.7)
+```
+
+So, there is a 9% chance of observing $w = 0$, a 42% chance of $w = 1$, and a 49% chance of $w = 2$. We can now simulate observations using these likelihoods:
+
+```{r}
+# Generate 1 observation
+rbinom(n = 1, size = 2, prob = 0.7)
+
+# Generate 2 observations
+rbinom(n = 2, size = 2, prob = 0.7)
+
+# Generate 100000 observations
+dummy_w <- rbinom(n = 100000, size = 2, prob = 0.7)
+table(dummy_w) / 100000
+```
+
+Now let's simulate 9 tosses of the glode:
+
+```{r}
+dummy_w <- rbinom(n = 100000, size = 9, prob = 0.7)
+simplehist(dummy_w, xlab = "dummy water count")
+```
+
+## Model Checking
+
+Model checking means ensuring the model fitting worked correctly and evaluating the adequacy of a model for some purpose. 
+
+Every parameter esimate has uncertanty which is the posterior density over $p$. We want to retain that uncertanty when making implied predictions. All we need to do is average over the posterior density for $p$. If we compute the sampling distribuiont of outcomes at each value of $p$, then you could average all of these prediction distributions together, using the posterior probabilities of each value of $p$, to get a posterior predictive distribution. 
+
+```{r}
+w <- rbinom(10000, size = 9, prob = samples)
+
+simplehist(w)
+```
+
+
+
+
+
