@@ -1,0 +1,226 @@
+---
+title: "Learning Stan"
+output: html_notebook
+---
+
+This code follows the tutorial posted at [Weird Fishes](https://www.weirdfishes.blog/blog/fitting-bayesian-models-with-stan-and-r)
+
+```{stan, eval = F, output.var="ex1"}
+/*
+You can do long blocks of comments like this.
+*/
+
+data{
+// load data
+}
+
+parameters{
+// define parameters the model is trying to estimate
+}
+
+model{
+// the posterior probability function
+}
+```
+
+Suppose we have N observations of Y data, where N is an integer and Y is a vector of real numbers. We would declare those like:
+
+```{stan, eval = F, output.var="ex1"}
+data{
+
+int N; // the number of observations
+vector[N] Y; // our data
+
+}
+```
+
+This tells Stan that we have an integer object N, and we have a vector Y of length N.
+
+We can also declare arrays:
+
+```{stan, eval = F, output.var="ex1"}
+data{
+
+int N; // the number of observations
+vector[N] Y; // our data
+real X[N];
+
+}
+```
+
+A few examples of this:
+
+```{stan, eval = F, output.var="ex1"}
+
+real x[10];
+real y[10];
+real z[10];
+
+z = x * y
+
+
+vector[10] x;
+vector[10] y;
+vector[5] z;
+
+z = x[1:5] .* y[1:5];
+```
+
+You can also set bounds on almost anything:
+
+```{stan}
+data{
+
+int n; // the number of observations
+
+vector[n] y; //
+
+vector<lower = 0>[n] x; // constrains x to be positive [0, Inf]
+
+}
+```
+
+Could also set an upper limit: `<lower = 0, upper = 100>`.
+
+The bounds are useful in the parameters block when we are estimating certian values like standard deviation that must be positive. Rather than extimating $\log(\sigma)$ we could just set the bounds:
+
+```{stan}
+parameters{
+
+  real<lower = 0> sigma;
+
+}
+```
+
+This tells Stan to only look for positive values and even lets us use normal priors:
+
+```{stan}
+model{
+
+  sigma ~ normal(0, 2);
+
+}
+```
+
+This equlivelant to saying that our prior on sigma is half normal, with standard deviation 2. 
+
+
+# Example Model: Predicting Salmon
+
+We will predict the number of young fish produced by a given amount of adult fish. 
+
+```{r}
+library(tidyverse)
+
+sr_data <- read_csv("/Users/nick/Documents/Workshops & Conferences/Statistical Rethinking/rlsadb_v4.25_ssb_recruits.csv") %>% 
+  set_names(tolower)
+
+sal_data <- sr_data %>% 
+  filter(stockid == 'PSALMAKPSWUD') %>% 
+  select(stocklong, year, ssb, r) %>% 
+  na.omit()
+
+sal_data %>% 
+  ggplot(aes(ssb, r)) + 
+  geom_point() + 
+  labs(x = "SSB", y = "Recruits")
+
+glimpse(sal_data)
+```
+
+We have three parameters we need to estimate, steepness $h$, maximum recruitment $\alpha$, and some error term $\sigma$.
+
+Write the Stan model:
+
+```{stan output.var = "bh_model"}
+data{
+
+  int<lower = 0> n; // number of observations
+
+  vector[n] ssb; // vector of observed ssb
+
+  vector[n] r; // vector of recruits
+
+  real max_r; // max observed recruitment
+
+}
+
+transformed data{
+
+  vector[n] log_r; // log recruitment
+
+  log_r = log(r);
+
+}
+
+parameters {
+
+  real<lower = 0.2, upper = 1> h; // steepness
+  
+  real<lower = 0> alpha; // max recruitment
+  
+  real<lower = 0> sigma; // recruitment standard deviation
+
+}
+
+transformed parameters{
+
+  vector[n] rhat;
+  
+  vector[n] log_rhat;
+  
+  rhat = (0.8 * alpha * h * ssb) ./ (0.2 * alpha * (1 - h) +(h - 0.2) * ssb); // beverton holt model
+  
+  log_rhat = log(rhat);
+  
+}
+
+model{
+
+  log_r ~ normal(log_rhat - 0.5 * sigma^2, sigma); // account for retransformation bias
+  
+  sigma ~ cauchy(0, 2.5);
+  
+  alpha ~ normal(2 * max_r, 0.2 * max_r);
+
+}
+
+generated quantities{
+
+  vector[n] pp_rhat;
+  
+  for (i in 1:n) {
+  
+    pp_rhat[i] = exp(normal_rng(log_rhat[i] - 0.5 * sigma^2, sigma)); // generate posterior predictives
+    
+  }
+  
+}
+```
+
+Now we need to pass the data to the Stan model. 
+
+```{r}
+library(rstan)
+
+data <- list(n = nrow(sal_data),
+             r = sal_data$r,
+             ssb = sal_data$ssb,
+             max_r = max(sal_data$r))
+
+bh_fit <- stan(file = "bh_model.stan",
+               #model_code = "bh_model",
+               data = data,
+               chains = 4, 
+               warmup = 1000,
+               iter = 2000,
+               cores = 1,
+               refresh = 250,
+               init = list(list(h = 0.4, alpha = 2 * data$max_r),
+                           list(h = 0.21, alpha = 3 * data$max_r),
+                           list(h = 0.8, alpha = 1 * data$max_r),
+                           list(h = 0.3, alpha = .8 * data$max_r)),
+               control = list(max_treedepth = 10,
+                              adapt_delta = 0.95))
+ ```
+
