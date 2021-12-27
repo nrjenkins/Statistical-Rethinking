@@ -1,0 +1,315 @@
+---
+title: "Statistical Rethinking: Chapter 7 Interactions"
+output: html_notebook
+---
+
+# Building an interaction
+
+```{r}
+library(rethinking)
+data(rugged)
+d <- rugged
+
+# make log version of outcome
+d$log_gdp <- log(d$rgdppc_2000)
+
+# extract countries with GDP data
+dd <- d[complete.cases(d$rgdppc_2000), ]
+
+# split countries into African and not-Africa
+d.A1 <- dd[dd$cont_africa == 1, ] # Africa
+d.A0 <- dd[dd$cont_africa == 0, ] # not-Africa
+
+# Africa nations
+m7.1 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged,
+        a ~ dnorm(8, 100),
+        bR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d.A1
+)
+
+# non-African nations
+m7.2 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged,
+        a ~ dnorm(8, 100),
+        bR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = d.A0
+)
+```
+
+Splitting the data is not a good idea since it produces less-accurate estimates. 
+
+### Adding a dummy variable doesn't work. 
+
+Including the categorical varible `cont_africa` won't reveal the reversed slope. 
+
+```{r}
+m7.3 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged,
+        a ~ dnorm(8, 100),
+        bR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = dd
+)
+
+# now include the dummy variable
+m7.4 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + bR * rugged + bA * cont_africa,
+        a ~ dnorm(8, 100),
+        bR ~ dnorm(0, 1),
+        bA ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = dd
+)
+
+compare(m7.3, m7.4)
+```
+
+```{stan output.var = "m7.4.stan"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+  vector<lower=0,upper=1>[N] cont_africa;
+}
+parameters {
+  real a;
+  real bR;
+  real bA;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu = a + bR * rugged + bA * cont_africa;
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+  target += normal_lpdf(bA | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(n in 1:N) {
+    mu[n] = a + bR * rugged[n] + bA * cont_africa[n];
+    log_lik[n] = normal_lpdf(loggdp[n] | mu[n], sigma);
+  }
+  }
+}
+```
+
+```{r}
+dat <- list(
+  N = NROW(dd),
+  loggdp = dd$log_gdp,
+  rugged = dd$rugged,
+  cont_africa = dd$cont_africa
+)
+
+fit07_4 <- sampling(m7.4.stan, data = dat, iter = 10000, chains = 4, cores = 4)
+
+post <- as.data.frame(fit07_4)
+
+mu <- post$a + d.A0$rugged %*% t(post$bR)
+mu_mean <- rowMeans(mu)
+mu_hpdi <- apply(mu, 1, rethinking::HPDI)
+```
+
+
+Now, let's plot the posterior predictions:
+
+```{r}
+rugged.seq <- seq(from = 1, to = 8, by = 0.25)
+
+# compute mu over samples, fixing cont_africa = 0
+mu.NotAfrica <- link(m7.4, data = data.frame(cont_africa = 0, rugged = rugged.seq))
+
+# compute mu over sample, fixing cont_africa = 1
+mu.Africa <- link(m7.4, data = data.frame(cont_africa = 1, rugged = rugged.seq))
+
+# summarize to means and intervals
+mu.NotAfrica.mean <- apply(mu.NotAfrica, 2, mean)
+mu.NotAfrica.PI <- apply(mu.NotAfrica, 2, PI, prob = 0.97)
+mu.Africa.mean <- apply(mu.Africa, 2, mean)
+mu.Africa.PI <- apply(mu.Africa, 2, PI, prob = 0.97)
+```
+
+### Adding a linear interaction does work.
+
+$$ Y_i \sim Normal(\mu_i, \sigma) \\
+\mu_i = \alpha + \gamma_i R_i + \beta_A A_i \\
+\gamma_i = \beta_R + \beta_{AR} A_i$$
+
+```{r}
+m7.5 <- map(
+  alist(log_gdp ~ dnorm(mu, sigma),
+        mu <- a + gamma * rugged + bA * cont_africa,
+        gamma <- bR + bAR * cont_africa,
+        a ~ dnorm(8, 100),
+        bA ~ dnorm(0, 1),
+        bR ~ dnorm(0, 1),
+        bAR ~ dnorm(0, 1),
+        sigma ~ dunif(0, 10)),
+  data = dd
+)
+precis(m7.5)
+
+m7.5.stan <- map2stan(m7.5)
+stancode(m7.5.stan)
+
+compare(m7.3, m7.4, m7.5)
+```
+
+```{stan output.var = "m7.5.model"}
+data {
+  int n;
+  real log_gdp[n];
+  real rugged[n];
+  int cont_africa[n];
+}
+
+parameters {
+  real a;
+  real bR;
+  real bA;
+  real bAR;
+  real sigma;
+}
+
+model {
+  // linear model
+  vector[n] gamma;
+  vector[n] mu;
+  
+  for (i in 1:n) {
+    gamma[i] = bR + bAR * cont_africa[i];
+  }
+  
+  for (i in 1:n) {
+   mu[i] = a + gamma[i] * rugged[i] + bA * cont_africa[i]; 
+  }
+  
+  // priors
+  a ~ normal(8, 100);
+  bA ~ normal(0, 1);
+  bR ~ normal(0, 1);
+  bAR ~ normal(0, 1);
+  sigma ~ uniform(0, 10);
+  
+  // likelihood
+  log_gdp ~ normal(mu, sigma);
+}
+
+generated quantities {
+  vector[n] log_lik;
+  vector[n] gamma;
+  vector[n] mu;
+  
+  for (i in 1:n) {
+  gamma[i] = bR + bAR * cont_africa[i];
+  mu[i] = a + gamma[i] * rugged[i] + bA * cont_africa[i];
+  log_lik[i] = normal_lpdf(log_gdp[i] | mu[i], sigma);
+  }
+}
+```
+
+```{r}
+library(tidyverse)
+library(tidybayes)
+
+dat <- 
+  d %>%
+  filter(!is.na(log_gdp)) %>%
+  select(log_gdp, rugged, cont_africa) %>%
+  compose_data()
+
+m7.5.fit <- sampling(m7.5.model, data = dat)
+precis(m7.5.fit)
+
+post <- as.data.frame(m7.5.fit)
+f_mu_07_5 <- function(rugged, cont_africa) with(post, a + bR * rugged + bAR * rugged * cont_africa + bA * cont_africa)
+mu_07_5 <- mapply(f_mu_07_5, rugged = d$rugged, cont_africa = d$cont_africa)
+mu_07_5_mean <- apply(mu_07_5, 2, mean)
+mu_07_5_pi <- apply(mu_07_5, 2, rethinking::PI, prob = .97)
+
+d_07_5 <- d %>%
+  mutate(mu_mean = mu_07_5_mean,
+         mu_pi_l = mu_07_5_pi[1,],
+         mu_pi_h = mu_07_5_pi[2,],
+         inAfrica = ifelse(cont_africa, 'African nations', 'Non-African nations'))
+
+ggplot(d_07_5) +
+  geom_point(aes(x = rugged, y = log_gdp, color = cont_africa), shape = 21) +
+  theme(legend.position = '') +
+  geom_line(aes(rugged, mu_mean)) +
+  geom_ribbon(aes(x=rugged, ymin=mu_pi_l, ymax=mu_pi_h, fill = cont_africa), alpha = .1) +
+  facet_wrap(~ cont_africa) +
+  labs(x = 'Terrain Ruggedness Index', y = 'log GDP year 2000')
+
+library(bayesplot)
+library(BayesPostEst)
+mcmcmat.stan <- as.matrix(m7.5.fit)
+mm <- model.matrix(log_gdp ~ rugged + cont_africa + rugged:cont_africa,
+                   data = dd)
+aveprob <- mcmcAveProb(modelmatrix = mm,
+                       mcmcout = mcmcmat.stan[ , 1:ncol(mm)],
+                       xcol = 2,
+                       xrange = c(0, 1),
+                       ci = c(0.025, 0.975),
+                       fullsims = TRUE)
+library("ggridges")
+ggplot(data = aveprob, 
+       aes(y = factor(x), x = pp)) + 
+  stat_density_ridges(quantile_lines = TRUE, 
+                quantiles = c(0.025, 0.5, 0.975), vline_color = "white")
+
+ggplot(data = aveprob, 
+       aes(x = x, y = median_pp)) + 
+  geom_ribbon(aes(ymin = lower_pp, ymax = upper_pp), fill = "gray") + 
+  geom_line()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
