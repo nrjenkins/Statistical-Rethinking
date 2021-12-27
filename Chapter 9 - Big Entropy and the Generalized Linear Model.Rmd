@@ -1,0 +1,122 @@
+---
+title: "Statistical Rethinking: Chapter 9 Big Entropy and the Generalized Linear Model"
+output: html_notebook
+---
+
+# Maximum entropy
+
+In brief, we seek a measure of uncertianty that satisfies three criteria: 1) the measure should be continuous; 2) it should increase as the number of possible events increases; and 3) it should be additive. This formula is known as information entropy:
+
+$$
+H(p) = - \sum_{i} p_i \log p_i
+$$
+
+The maximum entropy principle is: The distribution that can happen the most ways is also the distribution with the biggest information entropy. The distribution with the biggest entropy is the most conservative distribution that obeys its constraints. 
+
+Imagine 5 buckets and a pile of 10 individually numbered pebbles. You toss all pebbles such that each one is equally likely to land in any of the 5 buckets. But some arrangements are more likely than others. Let's put each distribution of pebbles in a list:
+
+```{r}
+p <- list()
+p$A <- c(0, 0, 10, 0, 0)
+p$B <- c(0, 1, 8, 1, 0)
+p$C <- c(0, 2, 6, 2, 0)
+p$D <- c(1, 2, 4, 2, 1)
+p$E <- c(2, 2, 2, 2, 2)
+
+# Now we normalize to make it a probability distribution
+p_norm <- lapply(p, function(q) q / sum(q))
+
+# Now we compute the information entropy
+H <- sapply(p_norm, function(q) - sum(ifelse(q == 0, 0, q * log(q))))
+H
+```
+
+Distribution E has the most number of ways to be realized so it has the biggest entropy. 
+
+```{r}
+ways <- c(1, 90, 1260, 37800, 113400)
+logwayspp <- log(ways) / 10
+```
+
+Information entropy is just a way of counting how many unique arrangements correspond to a distribution. This is useful because the distribution that can happen the greatest number of ways is the most plausible distribution. Call this the maximum entropy distribution. The vast majority of unique arrangements of pebbles produce either the maximum entropy distribution or rather a distribution very similar to it. 
+
+### Gaussian
+
+If all we are willing to assume about a collection of measurements is that they have a finite variance, then the Gaussian distribution represents the most conservative probability distribution to assign to those measurements. 
+
+### Binomial
+
+Binomial works well if; 1) only tow unordered events and 2) constant expected value. 
+
+Suppose we have a bag of marbles with an unknown number of blue and white marbles. We draw two from the bag with replacement. There are 4 possible sequences: 1) 2 white marbles, 2) one blue and then one white, 3) one white and then one blue, and 4) 2 blue marbles. Our task is to assign probabilities to each of these outcomes. 
+
+```{r}
+# build list of the candidate distributions
+p <- list()
+p[[1]] <- c(1/4, 1/4, 1/4, 1/4)
+p[[2]] <- c(2/6, 1/6, 1/6, 2/6)
+p[[3]] <- c(1/6, 2/6, 2/6, 1/6)
+p[[4]] <- c(1/8, 4/8, 2/8, 1/8)
+
+# compute expected value of each
+sapply(p, function(p) sum(p * c(0, 1, 1, 2)))
+
+# now compute the entropy of each distribution
+sapply(p, function(p) -sum(p * log(p)))
+```
+
+# Generalized linear models
+
+To generalize the linear regression strategy all we need to do is: replace a parameter describing the shape of the likelihood with a probability distribution other than the Gaussian. It results in a model that looks like this:
+
+$$
+y_i \sim \text{Binomial}(n, p_i) \\
+f(p_i) = \alpha + \beta x_i
+$$
+
+$f$ is the link function. GLMs need a link function, because there is rarely a $\mu$, a parameter describing the average outcome, and rarely are parameters unbounded in both directions, like $\mu$ is. For example, in the Binomial distribution the mean is $n * p$, a combination of both parameters. Usually only $n$ is known so we attach a linear component to the unknown part $p$. But, $p$ is a probability mass so it must lie between 0 and 1. 
+
+### Meet the family
+
+The most common distributions used in statistical modeling are members of a family known as the exponential family. 
+
+* Exponential distribution: constrained to be 0 or positive. It is a fundamental distribution of distance and duration. If the probability of an event is constant in time or across space, then the distribution of events tends towards exponential. 
+* Gamma distribution: also constrained to be 0 or positive. Unlike the exponential distribution, the gamma can have a peak above zero. If an event can only happen after two of more exponentially distributed events happen, the resulting wait times will be gamma distributed
+
+* Poisson distribution: count distribution like the binomial. If the number of trials is very large and the probability of a success is very small, then a binomial distribution converges to a Poission distribution with an expected rate of events per unit time of $\lambda = np$.
+
+### Linking linear models to distribution
+
+Consider the Zaphod distribution:
+
+$$
+y_i \sim \text{Zaphod}(\theta_i, \phi) \\
+f(\theta_i) = \alpha + \beta x_i
+$$
+
+Now we need to choose a (link) function for $f$. THe most common are the logit link and the log link. The logit link maps a parameter that is defined as a probability mass, and therefore constrained to lie between 0 and 1, onto a linear model that can take on any real value. In working with Binomial GLMS:
+
+$$
+y_i \sim \text{Binomial}(n, p_i) \\
+\text{logit}(p_i) = \alpha + \beta x_i
+$$
+
+And the logit function is defined as the log-odds:
+
+$$
+\text{logit}(p_i) = \log \frac{p_i}{1 - p_i}
+$$
+
+The odds of an event are just the probability it happens divided by the probability it does not happen. So really we have:
+
+$$
+\log \frac{p_i}{1 - p_i} = \alpha + \beta x_i
+$$
+
+With some algebra we get the Logistics, or inverse-logit:
+
+$$
+p_i = \frac{\exp{(\alpha + \beta x_i)}}{1 + \exp(\alpha + \beta x_i)}
+$$
+
+The second common link is the log link. This link function maps a parameter that is defined over only positive real values onto a linear model. The inverse of the log link is the exponential. 
