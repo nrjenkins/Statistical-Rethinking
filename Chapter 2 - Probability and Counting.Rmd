@@ -1,0 +1,176 @@
+---
+title: "Statistical Rethinking: Chapter 2"
+output: html_notebook
+---
+
+# The Garden of Forking Data
+
+## Counting Possibilities
+
+Imagine a bag with with four marbles that are either blue or white, but we don't know how many of each color. Thus, there are five possibilities that we will call conjectures.
+
+```{r}
+p1 <- c(0, 0, 0, 0)
+p2 <- c(1, 0, 0, 0)
+p3 <- c(1, 1, 0, 0)
+p4 <- c(1, 1, 1, 0)
+p5 <- c(1, 1, 1, 1)
+```
+
+We want to figure out which conjecture is most plausable given some evidence about the contents of the bag. We eknow that a sequence of three marbles is pulled from the bag, one at a time with replacement. The sequence that we get is:
+
+```{r}
+data <- c(1, 0, 1)
+```
+
+How likely is this outcome? There are `r 4^3` possible paths, but only 3 are consistent with the data. Here is a summary of the conjectures:
+
+| Conjecture |  Ways to Produce c(1, 0, 1) |
+|------------|-----------------------------|
+| c(0, 0, 0, 0) | 0 x 4 x 0 = 0 |
+| c(1, 0, 0, 0) | 1 x 3 x 1 = 3 |
+| c(1, 1, 0, 0) | 2 x 2 x 2 = 8 |
+| c(1, 1, 1, 0) | 3 x 1 x 3 = 9 |
+| c(1, 1, 1, 1) | 4 x 0 x 4 = 0 |
+
+Are each of these conjectures equally plausible? Perhaps, but we could have previous data that can inform our decision. If each conjecture is equally plausible then `r c(1, 1, 1, 0)` is the most plausible since it yields the highest count. Now suppose that we draw another marble that is blue. We can use this information to update our table and compute the likelihood of each path:
+
+| Conjecture |  Ways to Produce c(1, 0, 1) | Ways to Produce c(1) | New Count |
+|------------|-----------------------------|----------------------|-----------|
+| c(0, 0, 0, 0) | 0 x 4 x 0 = 0 | 0 | 0 x 0 = 0 |
+| c(1, 0, 0, 0) | 1 x 3 x 1 = 3 | 1 | 3 x 1 = 0 |
+| c(1, 1, 0, 0) | 2 x 2 x 2 = 8 | 2 | 8 x 2 = 16 |
+| c(1, 1, 1, 0) | 3 x 1 x 3 = 9 | 3 | 9 x 3 = 27 |
+| c(1, 1, 1, 1) | 4 x 0 x 4 = 0 | 4 | 0 x 4 = 0 |
+
+The plausibility of `r c(1, 0, 0, 0)` after seeing `r c(1, 0, 1)` $\propto$ ways `r c(1, 0, 0, 0)` can produce `r c(1, 0, 1)` x prior plausibility `r c(1, 0, 0, 0)`. The proportion of marbles that are blue $p$ for `r c(1, 0, 0, 0)` is $1/4$ and `r c(1, 0, 1)` $= D_{new}$. Then we have: plausibility of $p$ after $D_{new} \propto$ ways $p$ can produce $D_{new}$ x prior plausibility of $p$. Finally, we need to standardize the probabilites so that the sum up to 1: plausibility of $p$ after $D_{new} \propto \frac{\text{ways } p \text{can produce } D_{new} \text{ x } \text{prior plausibility of } p}{\text{sum of products}}$
+
+| Conjecture |  Ways to Produce c(1, 0, 1) (Data) | $p$ | Plausibility |
+|------------|------------------------------------|-----|--------------|
+| c(0, 0, 0, 0) | 0 x 4 x 0 = 0 | 0 | 0 |
+| c(1, 0, 0, 0) | 1 x 3 x 1 = 3 | 0.25 | 0.15 |
+| c(1, 1, 0, 0) | 2 x 2 x 2 = 8 | 0.5 | 0.40 |
+| c(1, 1, 1, 0) | 3 x 1 x 3 = 9 | 0.75 | 0.45 |
+| c(1, 1, 1, 1) | 4 x 0 x 4 = 0 | 1 | 0 |
+
+```{r}
+ways <- c(0, 3, 8, 9, 0)
+ways / sum(ways)
+```
+
+Terms:
+
+* Conjecture proportion of blue marbles $p$: A parameter value
+* Relative number of ways that a value $p$ can produce data: Likelihood
+* Prior plausibility of any specific $p$: Prior probability
+* Updated plausibility: Posterior probability
+
+
+# Components of the Model
+
+## Likelihood 
+
+Formula that derives the plausibility of the data. In the globe tossing example, we have two possible outcomes, water or land. If we assume that each toss is independent and that the probability of water is equal every time, we can use the binomial distribution:
+
+$$
+pr(w \mid n, p) = \frac{n!}{w!(n - w)!} p^w (1 - p)^{n - w}
+$$
+
+The likelihood of 6 W's in 9 tosses is:
+
+```{r}
+dbinom(x = 6, size = 9, prob = 0.5)
+plot(dbinom(x = 1:9, size = 9, prob = 0.5))
+```
+
+This is the relative number of ways to get 6 W's holding $p$ at 0.5 and $n$ at 9. 
+
+### Bayes Theorem
+
+The joint probability of the data $w$ and any particular value of $p$ is:
+
+$$
+Pr(w, p) = Pr(w \mid p) \text{ } Pr(p)
+$$
+
+and: 
+
+$$
+Pr(w, p) = Pr(p \mid w) \text{ } Pr(w)
+$$
+
+If we set these equations equal to one another, we can solve for the posterior probability, $Pr(p \mid w)$:
+
+$$
+Pr(p \mid w) = \frac{Pr(w \mid p) \text{ } Pr(w)}{Pr(w)}
+$$
+
+Posterior = $\frac{\text{Likelihood x Prior}}{\text{Average Likelihood}}$
+
+$$
+Pr(w) = E(Pr(w \mid p)) = \int Pr(w \mid p) Pr(p) dp
+$$
+
+## Making the Model Go
+
+### Grid Approximation
+
+1. Define the grid. This means you decide how many poits to use in estimating the posterior, an then you make a list of parameter values on the grid.
+2. Compute the value of the prior at each parameter value on the grid.
+3. Compute the likelihood at each parameter value.
+4. Compute the unstandardized posterior at each parameter value, by multiplying the proir by the likelihood.
+5. Finally, standardize the posterior, by dividing each value by the sum of all values.
+
+```{r}
+n <- 100
+
+# Define Grid
+p_grid <- seq(from = 0, to = 1, length.out = n)
+
+# Define Prior
+prior <- rep(1, n)
+
+# Compute likelihood at each value in grid
+likelihood <- dbinom(x = 6, size = 9, prob = p_grid)
+
+# Compute product of likelihood and proir
+unstd.posterior <- likelihood * prior
+
+# Standardize the posterior, so it sums to 1
+posterior <- unstd.posterior / sum(unstd.posterior)
+
+# Plot the posterior
+plot(p_grid, 
+     posterior, 
+     type = "b", 
+     xlab = "probability of water", 
+     ylab = "posterior probability")
+mtext(paste(n, "points", sep = " "))
+```
+
+### Quadratic Approximation
+
+1. Find the posterior mode. This is usually accomplished by some optimization algorithm, a procedure that virtually "climbs" the posterior distribution, as if it were a mountain. The golem doesn't know where the peak is, but it does know the slope under its feet. There are many well-delevoped optimization precedures, most of them more clever than simple hill climbing. But all of them try to find peaks.
+
+2. Once you find the peak of the posterior to sompute a quadratic approximation of the entire posterior distribution. In some cases, these calculation can be done analytically, but usually your computer uses some numerical technique instead. 
+
+```{r}
+library(rethinking)
+globe.qa <- map(
+  alist(w ~ dbinom(9, p), # Binomial likelihood
+        p ~ dunif(0, 1)), # Uniform prior
+  data = list(w = 6)
+)
+
+# Summary of quadratic approximation
+precis(globe.qa)
+
+# Analytical calculation
+w <- 6
+n <- 9
+curve(dbeta(x, w + 1, n - w + 1), from = 0, to = 1)
+
+# Quadratic approximation
+curve(dnorm(x, 0.67, 0.16), lty = 2, add = TRUE)
+```
+
