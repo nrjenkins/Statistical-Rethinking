@@ -1,0 +1,236 @@
+---
+title: "Statistical Rethinking: Chapter 12: Multilevel Models"
+output: html_notebook
+---
+
+# Example: Multilevel tadpoles
+
+```{r}
+library(rethinking)
+data("reedfrogs")
+d <- reedfrogs
+str(d)
+```
+
+A multilevel model estimates both the intercept and varance among groups. Here is the model used in previous chapters for predicting tadpole mortality in each tank:
+
+$$
+\begin{aligned}
+s_i &\sim \text{Binomial}(n_i, p_i) \\
+\text{logit}(p_i) &= \alpha_{TANK[i]} \\
+\alpha_{TANK} &\sim \text{Normal}(0, 5)
+\begin{aligned}
+$$
+
+```{r}
+# make the tank cluster variable
+d$tank <- 1:nrow(d)
+
+# fit
+m12.1 <- map2stan(
+  alist(surv ~ dbinom(density, p),
+        logit(p) <- a_tank[tank],
+        a_tank[tank] ~ dnorm(0, 5)),
+  data = d
+)
+
+precis(m12.1, depth = 2)
+```
+
+Now we fit the varying intercept multilevel model:
+
+$$
+\begin{aligned}
+s_i &\sim \text{Binomial}(n_i, p_i) \\
+\text{logit}(p_i) &= \alpha_{TANK[i]} \\
+\alpha_{TANK} &\sim \text{Normal}(\alpha, \sigma) \\
+\alpha &\sim \text{Normal}(0, 1) \\
+\sigma &\sim \text{HalfCauchy}(0, 1)
+\begin{aligned}
+$$
+
+```{r}
+m12.2 <- map2stan(
+  alist(surv ~ dbinom(density, p),
+        logit(p) <- a_tank[tank],
+        a_tank[tank] ~ dnorm(a, sigma),
+        a ~ dnorm(0, 1),
+        sigma ~ dcauchy(0, 1)),
+  data = d,
+  iter = 4000,
+  chains = 4
+)
+
+precis(m12.2, depth = 2)
+compare(m12.1, m12.2)
+```
+
+Let's plot and compare the posterior medians from models m12.2 and m12.2:
+
+```{r}
+# extran stan samples
+post <- extract.samples(m12.2)
+
+# compute median intercept for each tank
+# also transform to probability with logistic
+d$propsurv.est <- logistic(apply(post$a_tank, 2, median))
+
+library(tidyverse)
+library(ggpubr)
+d %>%
+  ggplot(aes(x = tank)) +
+  geom_hline(yintercept = logistic(median(post$a)), linetype = 2, size = 1/4) +
+  geom_vline(xintercept = c(16.5, 32.5), size = 1/4) +
+  geom_point(aes(y = propsurv), color = "blue") +
+  geom_point(aes(y = propsurv.est), shape = 1) +
+  coord_cartesian(ylim = c(0, 1)) +
+  scale_x_continuous(breaks = c(1, 16, 32, 48)) +
+  annotate("text", x = c(8, 16 + 8, 32 + 8), y = 0, 
+           label = c("small tanks", "medium tanks", "large tanks")) +
+  theme_pubr()
+```
+
+# More than one type of cluster
+
+Going back to the chimpanzee example from chapter 10, each pull is within a cluster of pulls for an individual and each pull is also within an experimental block. Let's take the full chimpanzee model from chapter 10 and first add varying intercepts for actors:
+
+$$
+\begin{aligned}
+L_i &\sim \text{Binomial}(1, p_i) \\
+\text{logit}(p_i) &= \alpha + \alpha_{ACTOR[i]} + (\beta_p + \beta_{PC}C_i)P_i \\
+\alpha_{ACTOR} &\sim \text{Normal}(0, \sigma_{ACTOR}) \\
+\alpha &\sim \text{Normal}(0, 10) \\
+\beta_P &\sim \text{Normal}(0, 10) \\
+\beta_{PC} &\sim \text{Normal}(0, 10) \\
+\sigma_{ACTOR} &\sim \text{HalfCauchy}(0, 1)
+\begin{aligned}
+$$
+
+```{r}
+data("chimpanzees")
+d <- chimpanzees
+d$recipient <- NULL
+
+m12.4 <- map2stan(
+  alist(pulled_left ~ dbinom(1, p),
+        logit(p) <- a + a_actor[actor] + (bp + bpC * condition) * prosoc_left,
+        a_actor[actor] ~ dnorm(0, sigma_actor),
+        a ~ dnorm(0, 10),
+        bp ~ dnorm(0, 10),
+        bpC ~ dnorm(0, 10),
+        sigma_actor ~ dcauchy(0, 1)),
+  data = d,
+  warmup = 1000,
+  iter = 5000,
+  chains = 4, 
+  cores = 4
+)
+precis(m12.4, depth = 2)
+plot(m12.4)
+```
+
+`a_actor` parameters are deviations from the the overall intercept `a`. So the total intercept for any row **i** is $\alpha + \alpha_{ACTOR[i]}$. To compute the total intercept for each actor:
+
+```{r}
+post <- extract.samples(m12.4)
+total_a_actor <- sapply(1:7, function(actor) post$a + post$a_actor[ , actor])
+round(apply(total_a_actor, 2, mean), 2)
+```
+
+To add the second cluster, we just add the another vector of intercepts:
+
+$$
+\begin{aligned}
+L_i &\sim \text{Binomial}(1, p_i) \\
+\text{logit}(p_i) &= \alpha + \alpha_{ACTOR[i]} + \alpha_{BLOCK[i]} (\beta_p + \beta_{PC}C_i)P_i \\
+\alpha_{ACTOR} &\sim \text{Normal}(0, \sigma_{ACTOR}) \\
+\alpha_{BLOCK} &\sim \text{Normal}(0, \sigma_{BLOCK}) \\
+\alpha &\sim \text{Normal}(0, 10) \\
+\beta_P &\sim \text{Normal}(0, 10) \\
+\beta_{PC} &\sim \text{Normal}(0, 10) \\
+\sigma_{ACTOR} &\sim \text{HalfCauchy}(0, 1)
+\sigma_{BLOCK} &\sim \text{HalfCauchy}(0, 1)
+\begin{aligned}
+$$
+
+```{r}
+d$block_id <- d$block
+
+m12.5 <- map2stan(
+  alist(pulled_left ~ dbinom(1, p),
+        logit(p) <- a + a_actor[actor] + + a_block[block_id] + (bp + bpC * condition) * prosoc_left,
+        a_actor[actor] ~ dnorm(0, sigma_actor),
+        a_block[block_id] ~ dnorm(0, sigma_block),
+        a ~ dnorm(0, 10),
+        bp ~ dnorm(0, 10),
+        bpC ~ dnorm(0, 10),
+        sigma_actor ~ dcauchy(0, 1),
+        sigma_block ~ dcauchy(0, 1)),
+  data = d,
+  warmup = 1000,
+  iter = 6000,
+  chains = 4, 
+  cores = 4
+)
+precis(m12.5, depth = 2)
+plot(precis(m12.5, depth = 2))
+
+compare(m12.4, m12.5)
+```
+
+# Multilevel posterior predictions
+
+## Posterior prediction for same clusters
+
+```{r}
+chimp <- 2
+d.pred <- list(prosoc_left = c(0, 1, 0, 1),
+               condition = c(0, 0, 1, 1),
+               actor = rep(chimp, 4))
+link.m12.4 <- link(m12.4, data = d.pred)
+pred.p <- apply(link.m12.4, 2, mean)
+pred.p.PI <- apply(link.m12.4, 2, PI)
+
+# empty plot frame with good axes
+plot( 0 , 0 , type="n" , xlab="prosoc_left/condition" ,
+    ylab="proportion pulled left" , ylim=c(0,1) , xaxt="n" ,
+    xlim=c(1,4) )
+axis( 1 , at=1:4 , labels=c("0/0","1/0","0/1","1/1") )
+
+# plot raw data, one trend for each of 7 individual chimpanzees
+# will use by() here; see Overthinking box for explanation
+p <- by( d$pulled_left ,
+    list(d$prosoc_left,d$condition,d$actor) , mean )
+for ( chimp in 1:7 )
+    lines( 1:4 , as.vector(p[,,chimp]) , col=rangi2 , lwd=1.5 )
+
+# now superimpose posterior predictions
+lines( 1:4 , pred.p )
+shade( pred.p.PI , 1:4 )
+```
+
+## Posterior predictions for new clusters
+
+## Modeling overdispersion
+
+```{r}
+library(rethinking)
+data(Kline)
+d <- Kline
+d$logpop <- log(d$population)
+d$society <- 1:10
+
+# fit model
+m12.6 <- map2stan(
+  alist(total_tools ~ dpois(mu),
+        log(mu) ~ a + a_society[society] + bp * logpop,
+        a ~ dnorm(0, 10),
+        bp ~ dnorm(0, 1),
+        a_society[society] ~ dnorm(0, sigma_society),
+        sigma_society ~ dcauchy(0, 1)),
+  data = d,
+  iter = 4000,
+  chains = 3
+)
+```
+
